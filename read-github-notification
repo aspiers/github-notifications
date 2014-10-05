@@ -48,7 +48,7 @@
 # that to pipe the whole email to this script whenever a message
 # is being read for the first time:
 #
-#   message-hook "(~N|~O) ~f notifications@github.com" "push <pipe-message>read-github-notification\n"
+#   message-hook "(~N|~O) ~f notifications@github.com" "push '<pipe-message>read-github-notification\n'"
 #
 # This script reads the email on STDIN (or from a filename argument),
 # extracts the URL of the 1-pixel read notification beacon <img>, and
