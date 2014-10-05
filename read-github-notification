@@ -1,0 +1,76 @@
+#!/usr/bin/ruby
+#
+# read-github-notification -- prevent your notifications inbox on
+# github.com from filling up if you read github's email-based
+# notifications from a text-based MUA such as mutt.
+
+# Copyright (c) 2014 Adam Spiers <adam@spiers.net>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Background
+# ==========
+#
+# At the bottom of
+#
+#   https://help.github.com/articles/configuring-notification-emails/
+#
+# it says:
+#
+#   Shared read state
+#   -----------------
+#
+#   If you read a notification email, it'll automatically be marked as
+#   read in the Notifications section. An invisible image is embedded
+#   in each mail message to enable this, which means that you must
+#   allow viewing images from notifications@github.com in order for
+#   this feature to work.
+#
+# However this doesn't automatically work if you use a text-based MUA
+# such as mutt.
+#
+# Solution
+# ========
+#
+# mutt has a nice message-hook feature where you can execute mutt
+# functions for messages matching specific criteria.  So we can use
+# that to pipe the whole email to this script whenever a message
+# is being read for the first time:
+#
+#   message-hook "(~N|~O) ~f notifications@github.com" "push <pipe-message>read-github-notification\n"
+#
+# This script reads the email on STDIN (or from a filename argument),
+# extracts the URL of the 1-pixel read notification beacon <img>, and
+# sends an HTTP request for that image, so that github knows the
+# notification has been read.
+
+require 'net/http'
+
+abort "Maximum of one filename argument" if ARGV.length > 1
+
+BEACON_RE = %r!<img alt="" height="1" src="(https://github\.com/notifications/beacon/.+?\.gif)" width="1" />!
+ARGF.each do |line|
+  if line =~ BEACON_RE
+    uri = URI($1)
+    response = Net::HTTP.get_response(uri)
+    case response
+    when Net::HTTPSuccess
+      exit 0  # github should now know we read the notification
+    else
+      abort response.body
+    end
+  end
+end
+
+abort "Couldn't find notification beacon <img> URL"
