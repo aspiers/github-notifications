@@ -63,13 +63,17 @@ BEACON_RE = %r!<img alt="" height="1" src="(https://github\.com/notifications/be
 ARGF.each do |line|
   if line =~ BEACON_RE
     uri = URI($1)
+    puts "GET #{uri}"
     response = Net::HTTP.get_response(uri)
     case response
     when Net::HTTPSuccess
+      puts response.code + " " + response.message
       exit 0  # github should now know we read the notification
     else
       abort response.body
     end
+  else
+    #puts "no match: [#{line}]"
   end
 end
 
