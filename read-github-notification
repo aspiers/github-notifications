@@ -1,4 +1,4 @@
-#!/usr/bin/ruby
+#!/usr/bin/env ruby
 #
 # read-github-notification -- prevent your notifications inbox on
 # github.com from filling up if you read github's email-based
