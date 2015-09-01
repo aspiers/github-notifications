@@ -55,13 +55,16 @@
 # sends an HTTP request for that image, so that github knows the
 # notification has been read.
 
+require 'mail'
 require 'net/http'
 
 abort "Maximum of one filename argument" if ARGV.length > 1
 
 BEACON_RE = %r!<img alt="" height="1" src="(https://github\.com/notifications/beacon/.+?\.gif)" width="1" />!
-ARGF.each do |line|
-  if line =~ BEACON_RE
+Mail.new(ARGF.read).parts.each do |part|
+  next unless part.content_type =~ /^text\/html/
+
+  if part.decode_body =~ BEACON_RE
     uri = URI($1)
     puts "GET #{uri}"
     response = Net::HTTP.get_response(uri)
