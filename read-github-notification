@@ -57,6 +57,32 @@
 
 require 'mail'
 require 'net/http'
+require 'optparse'
+
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: #$0 [options]"
+
+  opts.on("--bg", "Run in background") do |value|
+    options[:background] = true
+  end
+  opts.on("-q", "--quiet", "Suppress output") do |value|
+    options[:quiet] = true
+  end
+end.parse!
+
+if options[:background]
+  ARGV.push '-q' if options[:quiet]
+
+  bg = fork do
+    # $stdout.reopen("/dev/null", "w")
+    # $stderr.reopen("/dev/null", "w")
+    exec $0, *ARGV
+  end
+
+  Process.detach(bg)
+  exit 0
+end
 
 abort "Maximum of one filename argument" if ARGV.length > 1
 
@@ -66,17 +92,17 @@ Mail.new(ARGF.read).parts.each do |part|
 
   if part.decode_body =~ BEACON_RE
     uri = URI($1)
-    puts "GET #{uri}"
+    puts "GET #{uri}" unless options[:quiet]
     response = Net::HTTP.get_response(uri)
     case response
     when Net::HTTPSuccess
-      puts response.code + " " + response.message
+      puts response.code + " " + response.message unless options[:quiet]
       exit 0  # github should now know we read the notification
     else
       abort response.body
     end
   else
-    #puts "no match: [#{line}]"
+    #puts "no match: [#{line}]" unless options[:quiet]
   end
 end
 
