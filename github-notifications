@@ -1,0 +1,263 @@
+#!/usr/bin/env ruby
+#
+# github-notifications -- prevent your notifications inbox on
+# github.com from filling up if you read github's email-based
+# notifications from a text-based MUA such as mutt.
+
+# Copyright (c) 2014 Adam Spiers <adam@spiers.net>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Background
+# ==========
+#
+# At the bottom of
+#
+#   https://help.github.com/articles/configuring-notification-emails/
+#
+# it says:
+#
+#   Shared read state
+#   -----------------
+#
+#   If you read a notification email, it'll automatically be marked as
+#   read in the Notifications section. An invisible image is embedded
+#   in each mail message to enable this, which means that you must
+#   allow viewing images from notifications@github.com in order for
+#   this feature to work.
+#
+# However this doesn't automatically work if you use a text-based MUA
+# such as mutt.
+#
+# Solution
+# ========
+#
+# mutt has a nice message-hook feature where you can execute mutt
+# functions for messages matching specific criteria.  So we can use
+# that to pipe the whole email to this script whenever a message
+# is being read for the first time:
+#
+#   message-hook "(~N|~O) ~f notifications@github.com" \
+#                "push '<pipe-message>github-notification --push\n'"
+#
+# This script reads the email on STDIN (or from a filename argument),
+# extracts the URL of the 1-pixel read notification beacon <img>, and
+# sends an HTTP request for that image, so that github knows the
+# notification has been read.
+
+require 'digest'
+require 'fileutils'
+require 'logger'
+require 'mail'
+require 'net/http'
+require 'optparse'
+require 'pathname'
+
+SLEEP_INTERVAL = 5 * 60 # 5 minutes
+ONLINE_CHECK_TARGET_HOST = "8.8.8.8"
+PING_COUNT = 10
+LOG_FILE = ENV['HOME'] + "/.log/github-notifications.log"
+BEACON_RE = %r!<img alt="" height="1" src="(https://github\.com/notifications/beacon/.+?\.gif)" width="1" />!
+
+def main
+  options = parse_args
+  fork_and_detach(options) if options[:background]
+  case options[:mode]
+  when :push
+    add_to_queue(options, ARGF.read)
+  when :daemon
+    daemon_loop(options)
+  else
+    # Process immediately
+    process_mail(options, ARGF.read)
+  end
+end
+
+def parse_args
+  options = {}
+  OptionParser.new do |opts|
+    opts.banner = "Usage: #$0 [options]"
+
+    opts.on("-p", "--push", "Push a notification on the queue") do |value|
+      options[:mode] = :push
+    end
+    opts.on("-d", "--daemon", "Fork a daemon to manage the queue") do |value|
+      options[:mode] = :daemon
+      options[:background] = true
+    end
+    opts.on("--bg", "Run in background") do |value|
+      options[:background] = true
+    end
+    opts.on("-q", "--quiet", "Suppress output") do |value|
+      options[:quiet] = true
+    end
+  end.parse!
+
+  abort "Maximum of one filename argument" if ARGV.length > 1
+
+  options
+end
+
+def fork_and_detach(options)
+  pid = fork
+  if pid
+    Process.detach(pid)
+    exit 0
+  end
+
+  [$stdout, $stderr].each do |fd|
+    fd.reopen(LOG_FILE, "a")
+    fd.sync = true
+  end
+end
+
+def add_to_queue(options, content)
+  on_beacon(options, content) do |url|
+    filename = Digest::MD5.new.update(content).hexdigest
+    tmp_path = tmp_dir + filename
+    queue_path = queue_dir + filename
+    return if File.exist? tmp_path
+    File.open(tmp_path, "w") do |f|
+      f.puts url
+    end
+    # We do this to ensure that the queue processing daemon doesn't
+    # try to consume an entry which hasn't been fully written yet.
+    # Having said that, this is probably overkill given that we're
+    # only writing a single line and I/O is line-buffered.
+    File.link(tmp_path, queue_path)
+    File.unlink(tmp_path)
+  end
+end
+
+def daemon_loop(options)
+  logger = Logger.new(STDOUT)
+  logger.info("#$0 started up with pid #$$")
+  at_exit do
+    logger.info("#$0 with pid #$$ shut down")
+  end
+
+  online = false
+  loop do
+    online = check_for_connectivity_change(logger, online)
+    if online
+      initial_queue_size, success_count, errors = process_queue
+      report(logger, initial_queue_size, success_count, errors)
+    end
+    sleep SLEEP_INTERVAL
+  end
+end
+
+def check_for_connectivity_change(logger, old_online)
+  ping_cmd = "ping -c %d -w %d %s" % [
+    PING_COUNT, PING_COUNT, ONLINE_CHECK_TARGET_HOST
+  ]
+  new_online = `#{ping_cmd} 2>&1 | grep -q 'bytes from'`
+  if old_online && ! new_online
+    logger.info("Uplink lost; pausing queue processing")
+  elsif ! old_online && new_online
+    logger.info("Uplink regained; resuming queue processing")
+  end
+  new_online
+end
+
+def process_queue
+  dirents = Dir.entries(queue_dir).reject { |ent| ent =~ /^\.\.?$/ }
+  success_count = 0
+  errors = []
+  dirents.each do |ent|
+    path = queue_dir + ent
+    url = File.readlines(path)[0].rstrip
+    error = get_uri(url, true)
+    if error
+      errors.push [url, error]
+    else
+      File.unlink(path)
+      success_count += 1
+    end
+  end
+  [dirents.size, success_count, errors]
+end
+
+def report(logger, initial_queue_size, success_count, errors)
+  if initial_queue_size > 0
+    logger.info("Processed #{success_count} from queue " \
+                "of size #{initial_queue_size}")
+  end
+  errors.each do |url, error|
+    logger.error "Error retrieving #{url}:\n#{error}"
+  end
+end
+
+def process_mail(options, content)
+  success = on_beacon(options, content) do |url|
+    get_uri(url, options[:quiet])
+  end
+  exit 1 unless success
+end
+
+def on_beacon(options, content)
+  Mail.new(content).parts.each do |part|
+    next unless part.content_type =~ /^text\/html/
+
+    if part.decode_body =~ BEACON_RE
+      yield $1
+    else
+      abort "Couldn't find notification beacon <img> URL"
+      #puts "no match: [#{line}]" unless options[:quiet]
+    end
+  end
+end
+
+def get_uri(url, quiet)
+  puts "GET #{url}" unless quiet
+  uri = URI(url)
+  begin
+    response = Net::HTTP.get_response(uri)
+    case response
+    when Net::HTTPSuccess
+      puts response.code + " " + response.message unless quiet
+      nil  # github should now know we read the notification
+    else
+      response.body
+    end
+  rescue SocketError => e
+    e
+  end
+end
+
+def config_dir
+  config_dir = ENV['XDG_CONFIG_HOME'] || "#{ENV['HOME']}/.config"
+  Pathname.new(config_dir) + "github-notifications"
+end
+
+def tmp_dir
+  subdir "tmp"
+end
+
+def queue_dir
+  subdir "queue"
+end
+
+@subdirs = {}
+def subdir(subdir)
+  @subdirs[subdir] ||= begin
+    path = config_dir + subdir
+    unless File.exist? path
+      FileUtils.mkpath path
+    end
+    path
+  end
+end
+
+main
