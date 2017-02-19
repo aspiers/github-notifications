@@ -59,19 +59,33 @@ require 'mail'
 require 'net/http'
 require 'optparse'
 
-options = {}
-OptionParser.new do |opts|
-  opts.banner = "Usage: #$0 [options]"
+BEACON_RE = %r!<img alt="" height="1" src="(https://github\.com/notifications/beacon/.+?\.gif)" width="1" />!
 
-  opts.on("--bg", "Run in background") do |value|
-    options[:background] = true
-  end
-  opts.on("-q", "--quiet", "Suppress output") do |value|
-    options[:quiet] = true
-  end
-end.parse!
+def main
+  options = parse_args
+  fork_and_detach if options[:background]
+  process_mail(options, ARGF.read)
+end
 
-if options[:background]
+def parse_args
+  options = {}
+  OptionParser.new do |opts|
+    opts.banner = "Usage: #$0 [options]"
+
+    opts.on("--bg", "Run in background") do |value|
+      options[:background] = true
+    end
+    opts.on("-q", "--quiet", "Suppress output") do |value|
+      options[:quiet] = true
+    end
+  end.parse!
+
+  abort "Maximum of one filename argument" if ARGV.length > 1
+
+  options
+end
+
+def fork_and_detach
   ARGV.push '-q' if options[:quiet]
 
   bg = fork do
@@ -84,26 +98,31 @@ if options[:background]
   exit 0
 end
 
-abort "Maximum of one filename argument" if ARGV.length > 1
+def process_mail(options, content)
+  Mail.new(content).parts.each do |part|
+    next unless part.content_type =~ /^text\/html/
 
-BEACON_RE = %r!<img alt="" height="1" src="(https://github\.com/notifications/beacon/.+?\.gif)" width="1" />!
-Mail.new(ARGF.read).parts.each do |part|
-  next unless part.content_type =~ /^text\/html/
-
-  if part.decode_body =~ BEACON_RE
-    uri = URI($1)
-    puts "GET #{uri}" unless options[:quiet]
-    response = Net::HTTP.get_response(uri)
-    case response
-    when Net::HTTPSuccess
-      puts response.code + " " + response.message unless options[:quiet]
-      exit 0  # github should now know we read the notification
+    if part.decode_body =~ BEACON_RE
+      get_uri($1, options[:quiet])
     else
-      abort response.body
+      #puts "no match: [#{line}]" unless options[:quiet]
     end
-  else
-    #puts "no match: [#{line}]" unless options[:quiet]
   end
 end
+
+def get_uri(url, quiet)
+  puts "GET #{url}" unless quiet
+  uri = URI(url)
+  response = Net::HTTP.get_response(uri)
+  case response
+  when Net::HTTPSuccess
+    puts response.code + " " + response.message unless quiet
+    exit 0  # github should now know we read the notification
+  else
+    abort response.body
+  end
+end
+
+main
 
 abort "Couldn't find notification beacon <img> URL"
