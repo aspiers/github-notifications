@@ -30,7 +30,8 @@ require 'pathname'
 SLEEP_INTERVAL = 5 * 60 # 5 minutes
 ONLINE_CHECK_TARGET_HOST = "8.8.8.8"
 PING_COUNT = 10
-LOG_FILE = ENV['HOME'] + "/.log/github-notifications.log"
+LOG_DIR = ENV['HOME'] + "/.log"
+LOG_FILE = LOG_DIR + "/github-notifications.log"
 BEACON_RE = %r!<img alt="" height="1" src="(https://github\.com/notifications/beacon/.+?\.gif)" width="1" />!
 
 def main
@@ -77,6 +78,10 @@ def fork_and_detach(options)
   if pid
     Process.detach(pid)
     exit 0
+  end
+
+  unless File.exist? LOG_DIR
+    Dir.mkdir LOG_DIR
   end
 
   [$stdout, $stderr].each do |fd|
