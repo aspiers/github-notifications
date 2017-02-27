@@ -18,43 +18,6 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-# Background
-# ==========
-#
-# At the bottom of
-#
-#   https://help.github.com/articles/configuring-notification-emails/
-#
-# it says:
-#
-#   Shared read state
-#   -----------------
-#
-#   If you read a notification email, it'll automatically be marked as
-#   read in the Notifications section. An invisible image is embedded
-#   in each mail message to enable this, which means that you must
-#   allow viewing images from notifications@github.com in order for
-#   this feature to work.
-#
-# However this doesn't automatically work if you use a text-based MUA
-# such as mutt.
-#
-# Solution
-# ========
-#
-# mutt has a nice message-hook feature where you can execute mutt
-# functions for messages matching specific criteria.  So we can use
-# that to pipe the whole email to this script whenever a message
-# is being read for the first time:
-#
-#   message-hook "(~N|~O) ~f notifications@github.com" \
-#                "push '<pipe-message>github-notification --push\n'"
-#
-# This script reads the email on STDIN (or from a filename argument),
-# extracts the URL of the 1-pixel read notification beacon <img>, and
-# sends an HTTP request for that image, so that github knows the
-# notification has been read.
 
 require 'digest'
 require 'fileutils'
